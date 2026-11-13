@@ -4,5 +4,5 @@
 // usuario son las políticas de seguridad (RLS) de la tabla, ver supabase/esquema.sql.
 // Si se dejan vacíos, la página funciona igual, pero solo con datos en el dispositivo.
 
-export const SUPABASE_URL = '';
-export const SUPABASE_KEY = '';
+export const SUPABASE_URL = 'https://rfzwstbrbfzvothofvfw.supabase.co';
+export const SUPABASE_KEY = 'sb_publishable_ZcnWh2YxjyZa4rdxJ8ZFlw_pQRiN_Fs';
