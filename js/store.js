@@ -38,6 +38,8 @@ const vacio = () => ({
   vehiculos: [],
   registros: [],
   tareas: [],
+  // actualizado: última modificación (para sincronizar). cuenta: id de usuario dueño de esta copia.
+  meta: { actualizado: null, cuenta: null },
 });
 
 let db = cargar();
@@ -60,16 +62,28 @@ function normalizar(d) {
     vehiculos: Array.isArray(d.vehiculos) ? d.vehiculos : [],
     registros: Array.isArray(d.registros) ? d.registros : [],
     tareas: Array.isArray(d.tareas) ? d.tareas : [],
+    meta: { ...base.meta, ...(d.meta || {}) },
   };
 }
 
-function guardar() {
+const oyentes = new Set();
+/** Avisa cada vez que el usuario cambia algo (para sincronizar con la cuenta). */
+export const alCambiar = (fn) => oyentes.add(fn);
+
+function persistir() {
   try {
     localStorage.setItem(KEY, JSON.stringify(db));
     return true;
   } catch {
     return false;
   }
+}
+
+function guardar() {
+  db.meta.actualizado = new Date().toISOString();
+  const ok = persistir();
+  oyentes.forEach((fn) => fn());
+  return ok;
 }
 
 export const uid = () =>
@@ -161,13 +175,75 @@ export function guardarAjustes(a) {
   guardar();
 }
 
-export const exportar = () => JSON.stringify({ ...db, exportado: new Date().toISOString() }, null, 2);
+export const exportar = () => {
+  const { meta, ...datos } = db;
+  return JSON.stringify({ ...datos, exportado: new Date().toISOString() }, null, 2);
+};
 
 export function importar(texto) {
-  const d = JSON.parse(texto);
+  let d;
+  try { d = JSON.parse(texto); } catch { d = null; }
   if (!d || !Array.isArray(d.vehiculos)) throw new Error('El archivo no es un respaldo de la bitácora.');
-  db = normalizar(d);
+  const cuenta = db.meta.cuenta;
+  db = normalizar({ ...d, meta: { cuenta } });
   guardar();
+}
+
+export const hayEjemplos = () => db.vehiculos.some((v) => v.ejemplo);
+
+export function quitarEjemplos() {
+  db.vehiculos.filter((v) => v.ejemplo).forEach((v) => borrarVehiculo(v.id));
+}
+
+/** Deja la bitácora vacía (conserva ajustes y cuenta). */
+export function borrarTodo() {
+  db = { ...vacio(), ajustes: db.ajustes, meta: { ...db.meta } };
+  guardar();
+}
+
+// ---------- Sincronización ----------
+
+export const meta = () => ({ ...db.meta });
+export const datosParaNube = () => {
+  const { meta, ...datos } = db;
+  return datos;
+};
+export const tieneDatos = () => db.vehiculos.length > 0;
+
+/** Reemplaza la copia local con la de la cuenta, sin marcarla como cambio nuevo. */
+export function reemplazarDesdeNube(datos, actualizado, cuenta) {
+  db = normalizar({ ...datos, meta: { actualizado, cuenta } });
+  persistir();
+}
+
+/** Une la copia local con la de la cuenta (por id). Si un elemento existe en ambas, gana el de la cuenta. */
+export function fusionarConNube(datos, cuenta) {
+  const remoto = normalizar(datos);
+  const unir = (a, b) => {
+    const m = new Map(a.map((x) => [x.id, x]));
+    b.forEach((x) => m.set(x.id, x));
+    return [...m.values()];
+  };
+  db = {
+    ...db,
+    ajustes: { ...db.ajustes, ...remoto.ajustes },
+    vehiculos: unir(db.vehiculos, remoto.vehiculos),
+    registros: unir(db.registros, remoto.registros),
+    tareas: unir(db.tareas, remoto.tareas),
+    meta: { ...db.meta, cuenta },
+  };
+  guardar();
+}
+
+export function vincularCuenta(cuenta) {
+  db.meta.cuenta = cuenta;
+  persistir();
+}
+
+/** Al cerrar sesión: borra la copia de este dispositivo (queda guardada en la cuenta). */
+export function desvincular() {
+  db = { ...vacio(), ajustes: db.ajustes };
+  persistir();
 }
 
 // ---------- Cálculos ----------
@@ -291,11 +367,11 @@ export function cargarEjemplo() {
 
   const moto = guardarVehiculo({
     tipo: 'moto', nombre: 'La roja', marca: 'Honda', modelo: 'CB 190R', anio: 2022,
-    placa: '1234-AB', kmInicial: 14100, fechaAlta: fecha(170),
+    placa: '1234-AB', kmInicial: 14100, fechaAlta: fecha(170), ejemplo: true,
   });
   const auto = guardarVehiculo({
     tipo: 'auto', nombre: 'Auto de casa', marca: 'Toyota', modelo: 'Yaris', anio: 2018,
-    placa: 'ABC-123', kmInicial: 82000, fechaAlta: fecha(200),
+    placa: 'ABC-123', kmInicial: 82000, fechaAlta: fecha(200), ejemplo: true,
   });
 
   const t = (vid, nombre) => tareasDe(vid).find((x) => x.nombre.startsWith(nombre))?.id;

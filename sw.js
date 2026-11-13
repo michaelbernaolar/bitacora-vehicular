@@ -1,12 +1,15 @@
 // Guarda la app en el dispositivo para que abra sin internet.
 // Cambia VERSION cada vez que publiques cambios para que los celulares se actualicen.
-const VERSION = 'bitacora-v1';
+const VERSION = 'bitacora-v2';
 const ARCHIVOS = [
   './',
   'index.html',
   'css/app.css',
   'js/app.js',
   'js/store.js',
+  'js/sync.js',
+  'js/config.js',
+  'vendor/supabase.js',
   'manifest.webmanifest',
   'icons/icon-192.png',
   'icons/icon-512.png',

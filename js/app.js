@@ -1,4 +1,5 @@
 import * as S from './store.js';
+import * as Sync from './sync.js';
 
 const $app = document.getElementById('app');
 const $sheet = document.getElementById('sheet');
@@ -113,6 +114,14 @@ function renderGaraje() {
       </button>
     </header>
 
+    ${barraCuenta()}
+
+    ${S.hayEjemplos() ? `
+      <div class="aviso">
+        <p>Estás viendo datos de ejemplo. Quítalos cuando quieras empezar con tus vehículos.</p>
+        <button class="btn btn--ghost btn--small" id="btn-quitar-ejemplo">Quitar ejemplos</button>
+      </div>` : ''}
+
     ${lista.length ? `
       <ul class="garage">
         ${lista.map((v) => {
@@ -123,7 +132,7 @@ function renderGaraje() {
               <span class="garage__icon garage__icon--${v.tipo}">${ICONOS[v.tipo]}</span>
               <span class="garage__info">
                 <span class="garage__name">${esc(v.nombre || `${v.marca} ${v.modelo}`)}</span>
-                <span class="garage__meta">${esc([v.marca, v.modelo, v.anio].filter(Boolean).join(' '))}</span>
+                <span class="garage__meta">${esc((v.nombre ? [v.marca, v.modelo, v.anio] : [v.anio]).filter(Boolean).join(' '))}</span>
                 <span class="status status--${e}">${estados[e]}</span>
               </span>
               <span class="garage__right">
@@ -144,16 +153,54 @@ function renderGaraje() {
         <button class="btn btn--ghost btn--block" id="btn-ejemplo">Probar con datos de ejemplo</button>
       </section>
     `}
-    <p class="foot">Tus datos se guardan solo en este dispositivo. Descarga un respaldo desde Ajustes.</p>
+    <p class="foot">${Sync.info().usuario ? 'Tus datos se guardan en tu cuenta y también en este dispositivo para usarlos sin señal.' : 'Sin cuenta, tus datos se guardan solo en este dispositivo. Puedes descargar un respaldo desde Ajustes.'}</p>
   `;
 
   $app.querySelector('#btn-nuevo').addEventListener('click', () => formVehiculo());
   $app.querySelector('#btn-ajustes').addEventListener('click', formAjustes);
+  $app.querySelector('#btn-cuenta')?.addEventListener('click', formCuenta);
   $app.querySelector('#btn-ejemplo')?.addEventListener('click', () => {
     S.cargarEjemplo();
     toast('Datos de ejemplo cargados');
     render();
   });
+  $app.querySelector('#btn-quitar-ejemplo')?.addEventListener('click', () => {
+    S.quitarEjemplos();
+    toast('Ejemplos quitados');
+    render();
+  });
+}
+
+const TEXTO_ESTADO = {
+  local: 'Solo en este dispositivo',
+  sincronizando: 'Guardando en tu cuenta…',
+  pendiente: 'Cambios por guardar',
+  sincronizado: 'Guardado en tu cuenta',
+  'sin-conexion': 'Sin conexión. Se guardará al volver la señal',
+  error: 'No se pudo guardar. Se reintentará',
+};
+
+function barraCuenta() {
+  const { configurado, usuario, estado } = Sync.info();
+  if (!configurado) return '';
+  if (!usuario) {
+    return `
+      <button class="cuenta" id="btn-cuenta">
+        <span class="cuenta__avatar" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg></span>
+        <span class="cuenta__text">
+          <span class="cuenta__title">Crea tu cuenta o inicia sesión</span>
+          <span class="cuenta__sub">Para no perder tus datos y verlos en cualquier celular</span>
+        </span>
+      </button>`;
+  }
+  return `
+    <button class="cuenta cuenta--on" id="btn-cuenta">
+      <span class="cuenta__avatar" aria-hidden="true">${esc((usuario.email || '?')[0].toUpperCase())}</span>
+      <span class="cuenta__text">
+        <span class="cuenta__title">${esc(usuario.email)}</span>
+        <span class="cuenta__sub" data-sync="${estado}">${TEXTO_ESTADO[estado] || ''}</span>
+      </span>
+    </button>`;
 }
 
 // ---------- Vehículo ----------
@@ -211,7 +258,7 @@ function renderVehiculo(id, tab, animar) {
         </a>
         <div class="dash__id">
           <h1 class="dash__name">${esc(v.nombre || `${v.marca} ${v.modelo}`)}</h1>
-          <p class="dash__meta">${esc([v.marca, v.modelo, v.anio].filter(Boolean).join(' '))}</p>
+          <p class="dash__meta">${esc((v.nombre ? [v.marca, v.modelo, v.anio] : [v.anio]).filter(Boolean).join(' '))}</p>
         </div>
         ${v.placa ? `<span class="plate">${esc(v.placa)}</span>` : ''}
         <button class="icon-btn icon-btn--dark" id="btn-editar" aria-label="Editar vehículo">
@@ -234,6 +281,10 @@ function renderVehiculo(id, tab, animar) {
       ${tab === 'historial' ? vistaHistorial(id) : tab === 'plan' ? vistaPlan(id, plan) : vistaResumen(id, plan)}
     </section>
 
+    <div class="zona-peligro">
+      <button class="btn btn--ghost btn--danger-text btn--block" id="btn-eliminar-vehiculo">Eliminar vehículo</button>
+    </div>
+
     <button class="fab" id="btn-registrar">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       Registrar
@@ -241,6 +292,7 @@ function renderVehiculo(id, tab, animar) {
   `;
 
   $app.querySelector('#btn-editar').addEventListener('click', () => formVehiculo(v));
+  $app.querySelector('#btn-eliminar-vehiculo').addEventListener('click', () => eliminarVehiculo(v));
   $app.querySelector('#btn-registrar').addEventListener('click', () => formRegistro(id));
   $app.querySelectorAll('[data-registro]').forEach((el) =>
     el.addEventListener('click', () => formRegistro(id, S.registro(el.dataset.registro))));
@@ -408,19 +460,21 @@ function formVehiculo(v) {
       if (nuevo) location.hash = `#/v/${guardado.id}`;
       else render();
     });
-    el.querySelector('#borrar')?.addEventListener('click', async () => {
-      const ok = await confirmar({
-        titulo: '¿Eliminar este vehículo?',
-        texto: 'Se borrarán también todos sus registros y su plan de servicio. Esta acción no se puede deshacer.',
-        accion: 'Eliminar vehículo',
-      });
-      if (ok) {
-        S.borrarVehiculo(v.id);
-        toast('Vehículo eliminado');
-        location.hash = '#/';
-      }
-    });
+    el.querySelector('#borrar')?.addEventListener('click', () => eliminarVehiculo(v));
   });
+}
+
+async function eliminarVehiculo(v) {
+  const ok = await confirmar({
+    titulo: `¿Eliminar ${v.nombre || `${v.marca} ${v.modelo}`.trim()}?`,
+    texto: 'Se borrarán también todos sus registros y su plan de servicio. Esta acción no se puede deshacer.',
+    accion: 'Eliminar vehículo',
+  });
+  if (!ok) return;
+  S.borrarVehiculo(v.id);
+  toast('Vehículo eliminado');
+  if (location.hash === '#/' || location.hash === '') render();
+  else location.hash = '#/';
 }
 
 function mostrarError(el, msg) {
@@ -515,18 +569,37 @@ function formRegistro(vid, r) {
   });
 }
 
+const MODOS = {
+  km: { label: 'Kilometraje', ayuda: 'Para lo que se gasta con el uso: aceite, cadena, llantas, bujías.' },
+  tiempo: { label: 'Tiempo', ayuda: 'Para lo que vence por fecha aunque no uses el vehículo: SOAT, revisión técnica.' },
+  ambos: { label: 'Lo que llegue primero', ayuda: 'Te avisa por kilometraje o por fecha, lo que se cumpla antes. Útil si usas poco el vehículo.' },
+};
+
+function modoDeTarea(t) {
+  if (t.cadaKm && t.cadaMeses) return 'ambos';
+  if (t.cadaMeses && !t.cadaKm) return 'tiempo';
+  if (t.cadaKm && !t.cadaMeses) return 'km';
+  return 'ambos';
+}
+
 function formTarea(vid, t) {
   const nueva = !t;
   t = t || { nombre: '', cadaKm: '', cadaMeses: '' };
+  const modo = modoDeTarea(t);
   abrirHoja(`
     <h2 id="sheet-title" class="sheet__title">${nueva ? 'Agregar tarea' : 'Editar tarea'}</h2>
     <form id="f" novalidate>
-      ${campo('Tarea', `<input name="nombre" value="${esc(t.nombre)}" placeholder="Ej. Cambio de kit de arrastre" maxlength="50" required autofocus>`)}
+      ${campo('Tarea', `<input name="nombre" value="${esc(t.nombre)}" placeholder="Ej. Cambio de kit de arrastre" maxlength="50" required ${nueva ? 'autofocus' : ''}>`)}
+      <fieldset class="seg seg--3">
+        <legend class="field__label">¿Cuándo toca?</legend>
+        ${Object.entries(MODOS).map(([k, m]) => `
+          <label class="seg__opt"><input type="radio" name="modo" value="${k}" ${modo === k ? 'checked' : ''}><span>${m.label}</span></label>`).join('')}
+      </fieldset>
+      <p class="field__help field__help--modo" id="ayuda-modo"></p>
       <div class="grid2">
-        ${campo('Cada (km)', `<input name="cadaKm" type="number" inputmode="numeric" min="0" step="50" value="${esc(t.cadaKm ?? '')}" placeholder="5000">`)}
-        ${campo('Cada (meses)', `<input name="cadaMeses" type="number" inputmode="numeric" min="0" value="${esc(t.cadaMeses ?? '')}" placeholder="6">`)}
+        <div data-modo="km ambos">${campo('Cada (km)', `<input name="cadaKm" type="number" inputmode="numeric" min="0" step="50" value="${esc(t.cadaKm ?? '')}" placeholder="5000">`)}</div>
+        <div data-modo="tiempo ambos">${campo('Cada (meses)', `<input name="cadaMeses" type="number" inputmode="numeric" min="0" value="${esc(t.cadaMeses ?? '')}" placeholder="12">`)}</div>
       </div>
-      <p class="field__help">Llena uno o ambos. Si llenas los dos, te avisa con lo que llegue primero.</p>
       <p class="form-error" id="err" role="alert"></p>
       <div class="sheet__actions">
         ${nueva ? '<button type="button" class="btn btn--ghost" data-cerrar>Cancelar</button>' : '<button type="button" class="btn btn--ghost btn--danger-text" id="borrar">Quitar del plan</button>'}
@@ -534,13 +607,22 @@ function formTarea(vid, t) {
       </div>
     </form>`, (el) => {
     const f = el.querySelector('#f');
+    const sync = () => {
+      const m = f.modo.value;
+      el.querySelector('#ayuda-modo').textContent = MODOS[m].ayuda;
+      el.querySelectorAll('[data-modo]').forEach((x) => (x.hidden = !x.dataset.modo.split(' ').includes(m)));
+    };
+    f.querySelectorAll('[name=modo]').forEach((x) => x.addEventListener('change', sync));
+    sync();
     f.addEventListener('submit', (e) => {
       e.preventDefault();
+      const m = f.modo.value;
       const nombre = f.nombre.value.trim();
-      const cadaKm = Number(f.cadaKm.value) || null;
-      const cadaMeses = Number(f.cadaMeses.value) || null;
+      const cadaKm = m === 'tiempo' ? null : Number(f.cadaKm.value) || null;
+      const cadaMeses = m === 'km' ? null : Number(f.cadaMeses.value) || null;
       if (!nombre) return mostrarError(el, 'Escribe el nombre de la tarea.');
-      if (!cadaKm && !cadaMeses) return mostrarError(el, 'Indica cada cuántos km o cada cuántos meses se hace.');
+      if (m !== 'tiempo' && !cadaKm) return mostrarError(el, 'Indica cada cuántos km se hace.');
+      if (m !== 'km' && !cadaMeses) return mostrarError(el, 'Indica cada cuántos meses se hace.');
       S.guardarTarea({ ...(nueva ? {} : { id: t.id }), vehiculoId: vid, nombre, cadaKm, cadaMeses });
       cerrarHoja();
       toast(nueva ? 'Tarea agregada' : 'Cambios guardados');
@@ -558,6 +640,7 @@ function formTarea(vid, t) {
 
 function formAjustes() {
   const a = S.ajustes();
+  const conCuenta = Boolean(Sync.info().usuario);
   abrirHoja(`
     <h2 id="sheet-title" class="sheet__title">Ajustes y respaldo</h2>
     <form id="f">
@@ -570,10 +653,17 @@ function formAjustes() {
     </form>
     <div class="backup">
       <h3 class="backup__title">Respaldo</h3>
-      <p class="field__help">Tus datos viven solo en este navegador. Descarga un respaldo de vez en cuando, o úsalo para pasar tu bitácora a otro celular.</p>
+      <p class="field__help">${conCuenta ? 'Tu bitácora ya se guarda en tu cuenta. Igual puedes descargar una copia en un archivo.' : 'Sin cuenta, tus datos viven solo en este navegador. Descarga un respaldo de vez en cuando, o úsalo para pasar tu bitácora a otro celular.'}</p>
       <div class="sheet__actions">
         <button type="button" class="btn btn--ghost" id="exp">Descargar respaldo</button>
         <label class="btn btn--ghost">Restaurar respaldo<input type="file" id="imp" accept="application/json,.json" hidden></label>
+      </div>
+    </div>
+    <div class="backup">
+      <h3 class="backup__title">Empezar de cero</h3>
+      <p class="field__help">Borra todos los vehículos, registros y planes${conCuenta ? ' de este dispositivo y de tu cuenta' : ''}.</p>
+      <div class="sheet__actions">
+        <button type="button" class="btn btn--ghost btn--danger-text" id="borrar-todo">Borrar todos los datos</button>
       </div>
     </div>
     <div class="sheet__actions">
@@ -596,7 +686,7 @@ function formAjustes() {
     el.querySelector('#imp').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
-      const ok = await confirmar({ titulo: '¿Restaurar este respaldo?', texto: 'Reemplazará todos los datos actuales de este dispositivo.', accion: 'Restaurar' });
+      const ok = await confirmar({ titulo: '¿Restaurar este respaldo?', texto: 'Reemplazará todos los datos actuales.', accion: 'Restaurar' });
       if (!ok) return;
       try {
         S.importar(await file.text());
@@ -607,12 +697,174 @@ function formAjustes() {
         toast(err.message || 'No se pudo leer el archivo.');
       }
     });
+    el.querySelector('#borrar-todo').addEventListener('click', async () => {
+      const ok = await confirmar({
+        titulo: '¿Borrar todos los datos?',
+        texto: `Se eliminarán todos tus vehículos, registros y planes${conCuenta ? ', también en tu cuenta' : ''}. Si quieres conservarlos, descarga antes un respaldo.`,
+        accion: 'Borrar todo',
+      });
+      if (!ok) return;
+      S.borrarTodo();
+      toast('Datos borrados');
+      if (location.hash === '#/' || location.hash === '') render();
+      else location.hash = '#/';
+    });
+  });
+}
+
+// ---------- Cuenta ----------
+
+function formCuenta(modoInicial = 'entrar') {
+  const { configurado, usuario, estado } = Sync.info();
+  if (!configurado) return;
+
+  if (usuario) {
+    abrirHoja(`
+      <h2 id="sheet-title" class="sheet__title">Tu cuenta</h2>
+      <p class="sheet__text">Conectado como <strong>${esc(usuario.email)}</strong>.<br><span data-sync="${estado}">${TEXTO_ESTADO[estado] || ''}</span></p>
+      <p class="field__help">Inicia sesión con este correo en otro celular o en la PC y verás la misma bitácora.</p>
+      <div class="sheet__actions">
+        <button type="button" class="btn btn--ghost" id="sync-ya">Sincronizar ahora</button>
+        <button type="button" class="btn btn--ghost btn--danger-text" id="salir">Cerrar sesión</button>
+      </div>
+      <p class="form-error" id="err" role="alert"></p>
+      <div class="sheet__actions"><button type="button" class="btn btn--primary btn--block" data-cerrar>Listo</button></div>`, (el) => {
+      el.querySelector('#sync-ya').addEventListener('click', async () => {
+        const cambio = await Sync.sincronizar();
+        toast(Sync.info().estado === 'sincronizado' ? 'Todo guardado en tu cuenta' : TEXTO_ESTADO[Sync.info().estado]);
+        if (cambio) refrescarDesdeNube();
+      });
+      el.querySelector('#salir').addEventListener('click', async (e) => {
+        e.target.disabled = true;
+        try {
+          await Sync.salir();
+          cerrarHoja();
+          toast('Sesión cerrada');
+          location.hash = '#/';
+          render();
+        } catch (err) {
+          mostrarError(el, err.message);
+          e.target.disabled = false;
+        }
+      });
+    });
+    return;
+  }
+
+  const crear = modoInicial === 'crear';
+  abrirHoja(`
+    <h2 id="sheet-title" class="sheet__title">${crear ? 'Crear cuenta' : 'Iniciar sesión'}</h2>
+    <p class="sheet__text">${crear
+      ? 'Con una cuenta tu bitácora se guarda en la nube: no la pierdes si cambias de celular y puedes verla desde cualquier dispositivo.'
+      : 'Entra con tu correo para ver tu bitácora en este dispositivo.'}</p>
+    <form id="f" novalidate>
+      ${campo('Correo', `<input name="correo" type="email" autocomplete="email" inputmode="email" required autofocus>`)}
+      ${campo('Contraseña', `<input name="clave" type="password" autocomplete="${crear ? 'new-password' : 'current-password'}" minlength="6" required>`, crear ? 'Mínimo 6 caracteres.' : '')}
+      <p class="form-error" id="err" role="alert"></p>
+      <p class="form-ok" id="ok" role="status"></p>
+      <button class="btn btn--primary btn--block" id="enviar">${crear ? 'Crear cuenta' : 'Iniciar sesión'}</button>
+    </form>
+    <div class="cuenta-links">
+      ${crear
+        ? '<button type="button" class="link" id="ir-entrar">Ya tengo cuenta. Iniciar sesión</button>'
+        : '<button type="button" class="link" id="ir-crear">No tengo cuenta. Crear una</button><button type="button" class="link" id="olvide">Olvidé mi contraseña</button>'}
+    </div>`, (el) => {
+    const f = el.querySelector('#f');
+    const ok = el.querySelector('#ok');
+    const err = el.querySelector('#err');
+    el.querySelector('#ir-entrar')?.addEventListener('click', () => formCuenta('entrar'));
+    el.querySelector('#ir-crear')?.addEventListener('click', () => formCuenta('crear'));
+    el.querySelector('#olvide')?.addEventListener('click', async () => {
+      err.textContent = ''; ok.textContent = '';
+      const correo = f.correo.value.trim();
+      if (!correo) return mostrarError(el, 'Escribe tu correo y vuelve a tocar "Olvidé mi contraseña".');
+      try {
+        await Sync.recuperarClave(correo);
+        ok.textContent = `Te enviamos un enlace a ${correo} para crear una contraseña nueva.`;
+      } catch (e2) {
+        mostrarError(el, e2.message);
+      }
+    });
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.textContent = ''; ok.textContent = '';
+      const correo = f.correo.value.trim();
+      const clave = f.clave.value;
+      if (!/^\S+@\S+\.\S+$/.test(correo)) return mostrarError(el, 'Escribe un correo válido.');
+      if (clave.length < 6) return mostrarError(el, 'La contraseña debe tener al menos 6 caracteres.');
+      const boton = el.querySelector('#enviar');
+      boton.disabled = true;
+      try {
+        if (crear) {
+          const r = await Sync.crearCuenta(correo, clave);
+          if (r.debeConfirmar) {
+            ok.textContent = `Listo. Te enviamos un correo a ${correo}. Abre el enlace para activar tu cuenta y luego inicia sesión.`;
+            boton.disabled = false;
+            return;
+          }
+          toast('Cuenta creada');
+        } else {
+          await Sync.entrar(correo, clave);
+          toast('Sesión iniciada');
+        }
+        cerrarHoja();
+        render();
+      } catch (e2) {
+        mostrarError(el, e2.message);
+        boton.disabled = false;
+      }
+    });
+  });
+}
+
+function formNuevaClave() {
+  abrirHoja(`
+    <h2 id="sheet-title" class="sheet__title">Crea tu nueva contraseña</h2>
+    <form id="f" novalidate>
+      ${campo('Nueva contraseña', `<input name="clave" type="password" autocomplete="new-password" minlength="6" required autofocus>`, 'Mínimo 6 caracteres.')}
+      <p class="form-error" id="err" role="alert"></p>
+      <button class="btn btn--primary btn--block">Guardar contraseña</button>
+    </form>`, (el) => {
+    const f = el.querySelector('#f');
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (f.clave.value.length < 6) return mostrarError(el, 'La contraseña debe tener al menos 6 caracteres.');
+      try {
+        await Sync.cambiarClave(f.clave.value);
+        cerrarHoja();
+        toast('Contraseña actualizada');
+      } catch (e2) {
+        mostrarError(el, e2.message);
+      }
+    });
   });
 }
 
 // ---------- Inicio ----------
 
+let renderPendiente = false;
+function refrescarDesdeNube() {
+  if ($sheet.open) renderPendiente = true; // no interrumpir un formulario abierto
+  else render();
+}
+$sheet.addEventListener('close', () => {
+  if (renderPendiente) {
+    renderPendiente = false;
+    render();
+  }
+});
+
+Sync.alCambiarEstado((estado) => {
+  document.querySelectorAll('[data-sync]').forEach((el) => {
+    el.dataset.sync = estado;
+    el.textContent = TEXTO_ESTADO[estado] || '';
+  });
+});
+
 render();
+Sync.iniciar({ alRefrescar: refrescarDesdeNube, alRecuperar: formNuevaClave }).then(() => {
+  if (Sync.configurado()) refrescarDesdeNube(); // muestra la barra de cuenta
+});
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch(() => {});
